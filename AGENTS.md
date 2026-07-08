@@ -7,7 +7,7 @@ All prefixes below are composable — they can be chained in any combination (e.
 When the user's prompt starts with one of these prefixes, constrain the response length:
 
 - **`ss:`** (super-short) — answer in a **single sentence**.
-- **`s:`** (short) — answer in a **single paragraph**, max 4–5 sentences.
+- **`s:`** (short) — answer in **two short paragraphs**, 1–2 sentences each.
 - **`yn:`** (yes/no) — lead with a literal **"Yes"/"No"/"It depends"**, then at most one sentence of justification.
 
 No preambles, summaries, or follow-up offers that would push past the limit.
