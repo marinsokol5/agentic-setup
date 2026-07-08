@@ -1,4 +1,8 @@
 #!/usr/bin/env bun
+// The targets are real copies, not symlinks: tools that write configs atomically
+// (write temp file, then rename) reject or silently replace symlinked files —
+// a symlinked CLAUDE.md has caused exactly those write errors before. Copying
+// also keeps half-finished repo edits from going live before an explicit apply.
 import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
