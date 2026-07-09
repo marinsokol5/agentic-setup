@@ -19,7 +19,8 @@ No preambles, summaries, or follow-up offers that would push past the limit.
 
 # Prompt commands
 
-Unlike prefixes, these are standalone commands — the whole prompt is the command itself.
+Unlike prefixes, these are standalone commands — the whole prompt is the command itself. They end with `!` to avoid collisions with ordinary prose.
 
-- **`gcm`** (git commit) — commit the current code: bundle **all** outstanding changes (staged, unstaged, and untracked files) into a single commit with a concise message. If text follows `gcm`, use it as the commit message.
+- **`gcm!`** (git commit) — commit the current code: bundle **all** outstanding changes (staged, unstaged, and untracked files) into a single commit with a concise message. If text follows `gcm!`, use it as the commit message.
+- **`pl!`** (plain) — restate your previous message in plain language, shorter: short sentences, everyday words, lead with the point, no jargon without a one-word gloss. Simpler, not dumber — keep the technical substance and don't talk down to the reader.
 
