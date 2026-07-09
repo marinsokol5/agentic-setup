@@ -16,6 +16,7 @@ No preambles, summaries, or follow-up offers that would push past the limit.
 ## Behavior prefixes
 
 - **`ro:`** (read-only) — investigate and answer, but **do not modify any files or state**.
+- **`ross:`** (read-only super-short) — shorthand for `ro: ss:`
 - **`st:`** (standalone) — treat the question as basic and independent of the current project or folder, exactly as if asked fresh in a plain chat with no workspace context. Do not read any files, inspect the repo, or use project context; answer purely from general knowledge.
 
 # Prompt commands
