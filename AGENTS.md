@@ -17,6 +17,7 @@ No preambles, summaries, or follow-up offers that would push past the limit.
 
 - **`ro:`** (read-only) — investigate and answer, but **do not modify any files or state**.
 - **`ross:`** (read-only super-short) — shorthand for `ro: ss:`
+- **`cr:`** (change-review) — any file edits made in the reply MUST go through the `/change-review` skill (human in-browser diff review) instead of being applied directly
 - **`st:`** (standalone) — treat the question as basic and independent of the current project or folder, exactly as if asked fresh in a plain chat with no workspace context. Do not read any files, inspect the repo, or use project context; answer purely from general knowledge.
 
 # Prompt commands
@@ -25,6 +26,7 @@ Unlike prefixes, these are standalone commands — the whole prompt is the comma
 
 - **`gcm!`** (git commit) — commit the current code: bundle **all** outstanding changes (staged, unstaged, and untracked files) into a single commit with a concise message. If text follows `gcm!`, use it as the commit message.
 - **`pl!`** (plain) — restate your previous message in plain language, shorter: short sentences, everyday words, lead with the point, no jargon without a one-word gloss. Simpler, not dumber — keep the technical substance and don't talk down to the reader.
+- **`cr!`** (change-review) — open last EDIT through `/change-review` skill for a human in-browser diff review.
 
 @/Users/marinsokol/.codex/RTK.md
 @/Users/marinsokol/.codex/CAVEMAN.md
