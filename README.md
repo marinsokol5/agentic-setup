@@ -4,10 +4,14 @@ Dump of my personal agentic coding setup.
 
 ## Personal Skills
 
-- [resume-lite](https://github.com/marinsokol5/resume-lite) -> Resume a Claude Code or Codex session from a deterministic transcript. It's the fast, deterministic alternative to `/compact`, made to be lighter than `--resume`.
-- [change-review](https://github.com/marinsokol5/change-review) -> The human review step for AI-written changes: your agent proposes, you decide — inline diff in the browser, line comments, per-chunk apply, verdict back to the agent as JSON.
+- [resume-lite](https://github.com/marinsokol5/resume-lite) -> Fast and eterministic alternative to `/compact`; lighter than `--resume`.
+- [change-review](https://github.com/marinsokol5/change-review) -> Per-line review of agent changes.
+
+## Apps
+
+- [agent-manager](https://github.com/marinsokol5/agent-manager) -> Runing multiple accounts, tracking their usage, and pre-warming token windows.
 
 ## Scripts
 
-- [agentic-mv](scripts/agentic-mv.py) -> `agentic-mv.py old/ new/`: `mv` that persists your Claude Code and Codex sessions and settings; resume history, project trust, allowed tools, and MCP config all follow the folder to its new path. Prints an explicit plan of every session it found, asks for confirmation, and backs up whatever it rewrites.
+- [agentic-mv](scripts/agentic-mv.py) -> `mv` that persist your sessions and settings.
 
