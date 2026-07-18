@@ -1,15 +1,16 @@
 # My Agentic Setup
 
 Dump of my personal agentic coding setup. 
+I currently use 1xChatGPT-Plus and 2xClaude-Pro, roughly amounting to 65 euro per month.
 
 ## Skills
 
-- [resume-lite](https://github.com/marinsokol5/resume-lite) -> Fast and deterministic alternative to `/compact`; lighter than `--resume`.
+- [resume-lite](https://github.com/marinsokol5/resume-lite) -> Fast and deterministic alternative to `/compact` and lighter than `--resume; allows cross-referencing sessions between Claude and Codex.
 - [change-review](https://github.com/marinsokol5/change-review) -> Per-line review of agent changes.
 
 ## Apps
 
-- [agent-manager](https://github.com/marinsokol5/agent-manager) -> Running multiple accounts, tracking their usage, and pre-warming token windows.
+- [agent-manager](https://github.com/marinsokol5/agent-manager) -> Running multiple Claude and Codex accounts, tracking their usage, and pre-warming token windows.
 
 ## Tools
 
