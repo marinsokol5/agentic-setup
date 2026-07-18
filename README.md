@@ -1,7 +1,7 @@
 # My Agentic Setup
 
-Dump of my personal agentic coding setup on Macbook.
-I currently use 1xChatGPT-Plus and 2xClaude-Pro, roughly amounting to 65 euros per month.
+Dump of my personal agentic coding setup on Macbook.  
+I use 1xChatGPT-Plus and 2xClaude-Pro, roughly amounting to 65 euros per month.
 
 ## Skills
 
