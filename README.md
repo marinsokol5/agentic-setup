@@ -1,6 +1,6 @@
 # My Agentic Setup
 
-Dump of my personal agentic coding setup. 
+Dump of my personal agentic coding setup.   
 I currently use 1xChatGPT-Plus and 2xClaude-Pro, roughly amounting to 65 euro per month.
 
 ## Skills
