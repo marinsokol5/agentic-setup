@@ -7,6 +7,7 @@ I use 1xChatGPT-Plus and 2xClaude-Pro, roughly amounting to 65 euros per month.
 
 - [resume-lite](https://github.com/marinsokol5/resume-lite) -> Fast and deterministic alternative to `/compact` and lighter than `--resume; allows cross-referencing sessions between Claude and Codex.
 - [change-review](https://github.com/marinsokol5/change-review) -> Per-line review of agent changes.
+- [reddit-read](https://github.com/marinsokol5/reddit-read) -> Avoiding 403s when fetching a Reddit thread.
 
 ## Apps
 
