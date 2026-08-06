@@ -20,4 +20,5 @@ I use 1xChatGPT-Plus and 2xClaude-Pro, roughly amounting to 65 euros per month.
 ## Scripts
 
 - [agentic-mv](scripts/agentic-mv.py) -> `mv` that persists your sessions and settings; can be used for moving, renaming, or even merging existing Claude/Codex projects.
+- [agentic-init](scripts/agentic-init.py) -> Seeds a folder with an empty `AGENTS.md` and a `CLAUDE.md` that imports it.
 

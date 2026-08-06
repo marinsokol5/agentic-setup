@@ -22,6 +22,14 @@ realpath so nothing is rewritten twice.
 If SRC no longer exists but DST does, the folder move is skipped and only session
 metadata is migrated (recovery mode for "I already ran mv").
 
+If both exist, --merge folds SRC into DST instead of refusing: files move in
+entry by entry, session dirs are merged (session ids are uuids, so they don't
+collide), and the per-project config entries are merged rather than one side
+winning. On a file that exists in both: identical copies are dropped, .claude
+settings*.json are deep-merged (DST wins on conflicting scalars, lists unioned),
+memory/MEMORY.md gains SRC's missing lines, anything else keeps DST's copy and
+parks SRC's alongside as <name>.from-<srcname>.
+
 Rewritten files keep their original mtime so recency ordering in session pickers survives.
 Originals are backed up to ~/.agentic-mv/backups/<timestamp>/ (disable with --no-backup).
 """
@@ -81,6 +89,9 @@ class Change:
     description: str      # one explicit line, printed in plan and on apply
     path: Path | None     # file to back up before rewriting (None for renames/moves)
     apply: Callable[[], None]
+    # second file to back up: the src copy a merge consumes, which the rewrite of
+    # `path` does not preserve byte for byte (dst wins on conflicting values)
+    also_backup: Path | None = None
 
 
 @dataclass
@@ -90,8 +101,8 @@ class Plan:
     warnings: list[str] = field(default_factory=list)   # live sessions etc.
 
     def add(self, group: str, description: str, apply: Callable[[], None],
-            path: Path | None = None) -> None:
-        self.changes.append(Change(group, description, path, apply))
+            path: Path | None = None, also_backup: Path | None = None) -> None:
+        self.changes.append(Change(group, description, path, apply, also_backup))
 
 
 # ---------------------------------------------------------------- file rewriting
@@ -128,6 +139,153 @@ def rewrite_jsonl(path: Path, transform: Callable[[dict], bool]) -> None:
             else:
                 out.append(line)
     write_atomic(path, "".join(out))
+
+
+# ---------------------------------------------------------------- merging trees
+
+SETTINGS_JSON = {"settings.json", "settings.local.json"}
+
+
+def json_deep_merge(dst: object, src: object) -> object:
+    """dst wins on conflicting scalars; dicts merge key-wise, lists union (dst order first)."""
+    if isinstance(dst, dict) and isinstance(src, dict):
+        out = dict(dst)
+        for k, v in src.items():
+            out[k] = json_deep_merge(dst[k], v) if k in dst else v
+        return out
+    if isinstance(dst, list) and isinstance(src, list):
+        return dst + [x for x in src if x not in dst]
+    return dst
+
+
+def json_merge_gain(dst: object, src: object) -> int:
+    """How many settings dst would gain from src — for the plan line."""
+    if isinstance(dst, dict) and isinstance(src, dict):
+        return sum(json_merge_gain(dst[k], v) if k in dst else 1 for k, v in src.items())
+    if isinstance(dst, list) and isinstance(src, list):
+        return sum(1 for x in src if x not in dst)
+    return 0
+
+
+def read_json(path: Path) -> object | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+
+
+def merge_json_file(target: Path, source: Path) -> None:
+    merged = json_deep_merge(read_json(target), read_json(source))
+    write_atomic(target, json.dumps(merged, indent=2, ensure_ascii=False) + "\n")
+    source.unlink()
+
+
+def memory_index_gain(target: Path, source: Path) -> list[str]:
+    """MEMORY.md pointer lines present in source but not target."""
+    try:
+        have = {l.strip() for l in target.read_text(encoding="utf-8").splitlines() if l.strip()}
+        return [l for l in source.read_text(encoding="utf-8").splitlines()
+                if l.strip() and l.strip() not in have]
+    except OSError:
+        return []
+
+
+def merge_memory_index(target: Path, source: Path) -> None:
+    add = memory_index_gain(target, source)
+    if add:
+        body = target.read_text(encoding="utf-8").rstrip("\n")
+        write_atomic(target, body + "\n" + "\n".join(add) + "\n")
+    source.unlink()
+
+
+def same_bytes(a: Path, b: Path) -> bool:
+    try:
+        return a.stat().st_size == b.stat().st_size and a.read_bytes() == b.read_bytes()
+    except OSError:
+        return False
+
+
+def move_into(source: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(source), str(target))
+
+
+def free_name(path: Path, suffix: str) -> Path:
+    """<name><suffix>, bumped with .2, .3 … if that is taken too."""
+    cand = path.with_name(path.name + suffix)
+    n = 2
+    while cand.exists() or cand.is_symlink():
+        cand = path.with_name(f"{path.name}{suffix}.{n}")
+        n += 1
+    return cand
+
+
+def count_entries(d: Path) -> int:
+    try:
+        return sum(1 for _ in d.rglob("*"))
+    except OSError:
+        return 0
+
+
+def plan_tree_merge(plan: Plan, group: str, src_dir: Path, dst_dir: Path,
+                    park_suffix: str, label: str = "") -> None:
+    """Fold src_dir into dst_dir entry by entry. Whole subtrees that don't exist on the
+    dst side move as one change; the rest recurses down to the colliding files."""
+
+    def rel(p: Path) -> str:
+        return f"{label}{p.relative_to(src_dir)}"
+
+    def walk(s_dir: Path, d_dir: Path) -> None:
+        for entry in sorted(s_dir.iterdir()):
+            target = d_dir / entry.name
+            r = rel(entry)
+            if not target.exists() and not target.is_symlink():
+                what = (f"dir  {r}/  ({count_entries(entry)} entr(ies))"
+                        if entry.is_dir() and not entry.is_symlink() else f"file {r}")
+                plan.add(group, f"move {what}  ->  {target}",
+                         apply=lambda e=entry, t=target: move_into(e, t))
+                continue
+            if entry.is_dir() and target.is_dir() and not entry.is_symlink():
+                walk(entry, target)
+                continue
+            if entry.is_file() and target.is_file():
+                if same_bytes(entry, target):
+                    plan.add(group, f"identical in both: {r} — dropping the src copy",
+                             path=entry, apply=lambda e=entry: e.unlink())
+                    continue
+                if entry.name in SETTINGS_JSON:
+                    s_json, t_json = read_json(entry), read_json(target)
+                    if isinstance(s_json, dict) and isinstance(t_json, dict):
+                        plan.add(group,
+                                 f"merge {r} into {target}  "
+                                 f"(+{json_merge_gain(t_json, s_json)} setting(s) from src; "
+                                 f"dst wins on conflicts)",
+                                 path=target, also_backup=entry,
+                                 apply=lambda e=entry, t=target: merge_json_file(t, e))
+                        continue
+                if entry.name == "MEMORY.md":
+                    add = memory_index_gain(target, entry)
+                    plan.add(group, f"merge {r} into {target}  (+{len(add)} pointer line(s))",
+                             path=target, also_backup=entry,
+                             apply=lambda e=entry, t=target: merge_memory_index(t, e))
+                    continue
+            parked = free_name(target, park_suffix)
+            plan.add(group, f"conflict {r}: keeping dst copy, parking src as {parked}",
+                     apply=lambda e=entry, p=parked: move_into(e, p))
+
+    walk(src_dir, dst_dir)
+
+
+def prune_empty_tree(root: Path) -> None:
+    """Remove root once the merge emptied it. Raises if anything is left behind."""
+    for d, _, _ in os.walk(root, topdown=False):
+        try:
+            os.rmdir(d)
+        except OSError:
+            pass
+    if root.exists():
+        left = sorted(str(p.relative_to(root)) for p in root.rglob("*"))
+        raise RuntimeError(f"{root} still holds {len(left)} entr(ies): {', '.join(left[:10])}")
 
 
 # ---------------------------------------------------------------- Claude: session lines
@@ -176,7 +334,7 @@ def probe_project_dir_cwd(project_dir: Path) -> str | None:
 
 
 def scan_claude_projects_dir(plan: Plan, group: str, projects_dir: Path,
-                             remap: Remapper) -> None:
+                             remap: Remapper, park_suffix: str) -> None:
     enc_src = encode_claude(remap.src)
     enc_dst = encode_claude(remap.dst)
 
@@ -243,12 +401,26 @@ def scan_claude_projects_dir(plan: Plan, group: str, projects_dir: Path,
 
         extras = [e.name for e in child.iterdir() if e.suffix != ".jsonl"]
         extra_note = f"  (+ {', '.join(sorted(extras))})" if extras else ""
-        plan.add(
-            group,
-            f"rename project dir  {child.name}  ->  {new_name}"
-            f"  ({len(sessions)} session file(s){extra_note})",
-            apply=lambda child=child, new_name=new_name: child.rename(child.with_name(new_name)),
-        )
+        target = child.with_name(new_name)
+        if target.is_dir():
+            plan.add(
+                group,
+                f"merge project dir  {child.name}  ->  {new_name}"
+                f"  ({len(sessions)} session file(s){extra_note} joining "
+                f"{len(list(target.glob('*.jsonl')))} already there)",
+                apply=lambda: None,
+            )
+            plan_tree_merge(plan, group, child, target, park_suffix,
+                            label=f"{child.name}/")
+            plan.add(group, f"remove emptied session dir  {child}",
+                     apply=lambda child=child: prune_empty_tree(child))
+        else:
+            plan.add(
+                group,
+                f"rename project dir  {child.name}  ->  {new_name}"
+                f"  ({len(sessions)} session file(s){extra_note})",
+                apply=lambda child=child, target=target: child.rename(target),
+            )
 
 
 # ---------------------------------------------------------------- Claude: config + history
@@ -264,35 +436,75 @@ def scan_claude_json(plan: Plan, group: str, cfg: Path, remap: Remapper) -> None
     if not isinstance(projects, dict):
         return
     renames = [(k, remap(k)) for k in projects if remap(k) is not None]
-    for old, new in renames:
-        if new in projects:
-            plan.notes.append(
-                f"{group}: {cfg.name} already has an entry for {new}; keeping it, dropping the {old} entry"
-            )
     if not renames:
         plan.notes.append(f"{group}: {cfg} — no matching \"projects\" keys")
         return
 
+    def describe(old: str, new: str) -> str:
+        if new not in projects:
+            return f'{cfg}: projects["{old}"] -> projects["{new}"]'
+        src_e, dst_e = projects[old], projects[new]
+        if not (isinstance(src_e, dict) and isinstance(dst_e, dict)):
+            return f'{cfg}: projects["{old}"] -> projects["{new}"] (dst entry kept as-is)'
+        newer = "src" if src_e.get("lastStartTime", 0) > dst_e.get("lastStartTime", 0) else "dst"
+        gained = sum(1 for k, v in merge_project_entry(dst_e, src_e).items() if dst_e.get(k) != v)
+        return (f'{cfg}: projects["{old}"] merged into existing projects["{new}"]  '
+                f"({gained} field(s) change; session stats from {newer} — the newer one)")
+
     def apply() -> None:
         d = json.loads(cfg.read_text(encoding="utf-8"))
-        d["projects"] = _rename_keys(d["projects"], dict(renames))
+        d["projects"] = _merge_keys(d["projects"], dict(renames))
         write_atomic(cfg, dumps_compact(d))
 
     # one line per renamed key so the report is explicit; the file is written once
     for old, new in renames[:-1]:
-        plan.add(group, f'{cfg}: projects["{old}"] -> projects["{new}"]',
-                 apply=lambda: None, path=cfg)
+        plan.add(group, describe(old, new), apply=lambda: None, path=cfg)
     old, new = renames[-1]
-    plan.add(group, f'{cfg}: projects["{old}"] -> projects["{new}"]', apply=apply, path=cfg)
+    plan.add(group, describe(old, new), apply=apply, path=cfg)
 
 
-def _rename_keys(d: dict, table: dict[str, str]) -> dict:
-    out = {}
+def merge_project_entry(dst_e: dict, src_e: dict) -> dict:
+    """One "projects" entry folded into another. Lists union, dicts merge, flags OR,
+    plain counters take the max; the lastX session stats come as a block from whichever
+    side ran more recently, so they stay internally consistent."""
+    if not (isinstance(dst_e, dict) and isinstance(src_e, dict)):
+        return dst_e
+    out = dict(dst_e)
+    for k, v in src_e.items():
+        if k.startswith("last"):
+            continue
+        if k not in out:
+            out[k] = v
+        elif isinstance(out[k], bool) and isinstance(v, bool):
+            out[k] = out[k] or v
+        elif isinstance(out[k], list) and isinstance(v, list):
+            out[k] = out[k] + [x for x in v if x not in out[k]]
+        elif isinstance(out[k], dict) and isinstance(v, dict):
+            out[k] = json_deep_merge(out[k], v)
+        elif (isinstance(out[k], (int, float)) and isinstance(v, (int, float))
+              and not isinstance(v, bool)):
+            out[k] = max(out[k], v)
+    if src_e.get("lastStartTime", 0) > dst_e.get("lastStartTime", 0):
+        out.update({k: v for k, v in src_e.items() if k.startswith("last")})
+    return out
+
+
+def _merge_keys(d: dict, table: dict[str, str]) -> dict:
+    """Rename keys; where a rename lands on an existing key, merge the two entries
+    (the pre-existing dst entry is the winning side on conflicts)."""
+    out: dict = {}
+    from_src: set[str] = set()
     for k, v in d.items():
         nk = table.get(k, k)
-        if nk in out:  # collision with a pre-existing entry: keep the existing one
-            continue
-        out[nk] = v
+        if nk not in out:
+            out[nk] = v
+            if k in table:
+                from_src.add(nk)
+        elif k in table:                      # src entry arriving on top of a dst entry
+            out[nk] = merge_project_entry(out[nk], v)
+        elif nk in from_src:                  # dst entry arriving after the src entry
+            out[nk] = merge_project_entry(v, out[nk])
+            from_src.discard(nk)
     return out
 
 
@@ -328,7 +540,7 @@ def scan_claude_history(plan: Plan, group: str, hist: Path, remap: Remapper) -> 
 
 
 def check_claude_live_sessions(plan: Plan, group: str, sessions_dir: Path,
-                               remap: Remapper) -> None:
+                               remap: Remapper, side: str = "src") -> None:
     for f in sorted(sessions_dir.glob("*.json")):
         try:
             info = json.loads(f.read_text(encoding="utf-8"))
@@ -345,9 +557,13 @@ def check_claude_live_sessions(plan: Plan, group: str, sessions_dir: Path,
         except PermissionError:
             alive = True
         if alive:
+            why = ("quit it before moving, or it will keep writing to the old path"
+                   if side == "src" else
+                   "quit it before merging — it rewrites its config entry from memory on exit, "
+                   "which would undo the merged entry")
             plan.warnings.append(
                 f"{group}: LIVE Claude session (pid {pid}, session {info.get('sessionId')}) is running "
-                f"in {info.get('cwd')} — quit it before moving, or it will keep writing to the old path"
+                f"in {info.get('cwd')} — {why}"
             )
 
 
@@ -414,27 +630,40 @@ def scan_codex_config(plan: Plan, group: str, cfg: Path, remap: Remapper) -> Non
     except OSError as exc:
         plan.notes.append(f"{group}: could not read {cfg}: {exc}")
         return
+    existing = {m.group(2) for m in map(CODEX_PROJECT_HEADER.match, lines) if m}
     renames = []
-    for line in lines:
-        m = CODEX_PROJECT_HEADER.match(line)
-        if m and remap(m.group(2)) is not None:
-            renames.append((m.group(2), remap(m.group(2))))
+    for path in existing:
+        new = remap(path)
+        if new is not None:
+            # renaming onto a header the file already has would make a duplicate TOML
+            # table (config unparseable) — drop the src block instead, dst is set up already
+            renames.append((path, new, new in existing))
     if not renames:
         plan.notes.append(f"{group}: {cfg.name} — no [projects] trust entries for this path")
         return
+    drop = {old for old, _, dup in renames if dup}
 
     def apply() -> None:
         current = cfg.read_text(encoding="utf-8").splitlines(keepends=True)
-        out = []
+        out, skipping = [], False
         for line in current:
             m = CODEX_PROJECT_HEADER.match(line)
-            new = remap(m.group(2)) if m else None
-            out.append(m.group(1) + new + m.group(3) + ("\n" if line.endswith("\n") else "")
-                       if m and new is not None else line)
+            if m:
+                skipping = m.group(2) in drop
+                if not skipping:
+                    new = remap(m.group(2))
+                    out.append(m.group(1) + new + m.group(3) +
+                               ("\n" if line.endswith("\n") else "") if new is not None else line)
+                continue
+            if skipping:                       # body of a dropped table, up to the next header
+                continue
+            out.append(line)
         write_atomic(cfg, "".join(out))
 
-    for old, new in renames:
-        plan.add(group, f'{cfg.name}: [projects."{old}"] -> [projects."{new}"]',
+    for old, new, dup in sorted(renames):
+        plan.add(group,
+                 f'{cfg.name}: [projects."{old}"] dropped — [projects."{new}"] already exists'
+                 if dup else f'{cfg.name}: [projects."{old}"] -> [projects."{new}"]',
                  apply=lambda: None, path=cfg)
     plan.changes[-1].apply = apply
 
@@ -489,11 +718,16 @@ class RealpathOnce:
 
 
 def build_plan(src: str, dst: str, claude_homes: list[Path], codex_homes: list[Path],
-               move_folder: bool) -> Plan:
+               move_folder: bool, merge: bool = False) -> Plan:
     plan = Plan()
     remap = Remapper(src, dst)
+    park_suffix = f".from-{os.path.basename(src)}"
 
-    if move_folder:
+    if merge:
+        plan_tree_merge(plan, "filesystem", Path(src), Path(dst), park_suffix)
+        plan.add("filesystem", f"remove emptied source folder  {src}",
+                 apply=lambda: prune_empty_tree(Path(src)))
+    elif move_folder:
         def do_move() -> None:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.move(src, dst)
@@ -508,7 +742,7 @@ def build_plan(src: str, dst: str, claude_homes: list[Path], codex_homes: list[P
         group = f"claude home: {home}"
         projects = home / "projects"
         if projects.is_dir() and once.first(projects, group):
-            scan_claude_projects_dir(plan, group, projects, remap)
+            scan_claude_projects_dir(plan, group, projects, remap, park_suffix)
         for cfg in [home / ".claude.json", Path.home() / ".claude.json"]:
             if cfg.is_file() and once.first(cfg, group):
                 scan_claude_json(plan, group, cfg, remap)
@@ -518,6 +752,8 @@ def build_plan(src: str, dst: str, claude_homes: list[Path], codex_homes: list[P
         live = home / "sessions"
         if live.is_dir() and once.first(live, group):
             check_claude_live_sessions(plan, group, live, remap)
+            if merge:  # a session open in dst rewrites its config entry on exit, clobbering the merge
+                check_claude_live_sessions(plan, group, live, Remapper(dst, dst), side="dst")
 
     for home in codex_homes:
         group = f"codex home: {home}"
@@ -566,9 +802,11 @@ def apply_plan(plan: Plan, backup_root: Path | None) -> int:
     backed_up: set[Path] = set()
     for c in plan.changes:
         try:
-            if backup_root is not None and c.path is not None and c.path not in backed_up:
-                backup_file(c.path, backup_root)
-                backed_up.add(c.path)
+            if backup_root is not None:
+                for p in (c.path, c.also_backup):
+                    if p is not None and p not in backed_up and p.exists():
+                        backup_file(p, backup_root)
+                        backed_up.add(p)
             c.apply()
             print(f"  ok    {c.description}")
         except Exception as exc:  # keep going; each change is independent
@@ -588,12 +826,16 @@ def main() -> int:
                "  agentic-mv ~/projects/agentic-setup ~/projects/agentic-mv\n"
                "  agentic-mv -n old/ new/          # dry-run: show what would be touched\n"
                "  agentic-mv old/ new/ --yes       # no confirmation prompt\n"
+               "  agentic-mv old/ new/ --merge     # dst exists: fold old/ into it, sessions included\n"
                "  agentic-mv old/ new/             # if you already ran plain mv: metadata-only mode\n"
                "  agentic-mv old/ new/ --claude-home-dirs ~/.claude,~/other-claude-home",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("src", help="current project folder path")
     ap.add_argument("dst", help="new project folder path")
     ap.add_argument("-n", "--dry-run", action="store_true", help="report what would change, touch nothing")
+    ap.add_argument("--merge", action="store_true",
+                    help="when dst already exists: fold src into it (files, sessions and "
+                         "config entries are merged) instead of refusing")
     ap.add_argument("-y", "--yes", action="store_true", help="skip the confirmation prompt")
     ap.add_argument("--no-backup", action="store_true", help="don't back up files before rewriting")
     ap.add_argument("--claude-home-dirs", action="append", metavar="DIR[,DIR...]",
@@ -613,19 +855,27 @@ def main() -> int:
         ap.error(f"src is inside dst ({src})")
 
     src_exists, dst_exists = os.path.isdir(src), os.path.exists(dst)
+    merge = False
     if src_exists and dst_exists:
-        ap.error(f"both {src} and {dst} exist — refusing to overwrite")
+        if not args.merge:
+            ap.error(f"both {src} and {dst} exist — refusing to overwrite "
+                     "(pass --merge to fold src into dst)")
+        if not os.path.isdir(dst):
+            ap.error(f"--merge needs {dst} to be a directory")
+        merge = True
     if not src_exists and not dst_exists:
         ap.error(f"neither {src} nor {dst} exists")
+    if args.merge and not merge:
+        print(f"note: --merge ignored — {dst} does not exist yet, this is a plain move")
     move_folder = src_exists
 
     claude_homes = resolve_homes(args.claude_home_dirs, "CLAUDE_CONFIG_DIR", ".claude")
     codex_homes = resolve_homes(args.codex_home_dirs, "CODEX_HOME", ".codex")
-    print(f"agentic-mv: {src}  ->  {dst}")
+    print(f"agentic-mv: {src}  {'merged into' if merge else ' ->'}  {dst}")
     print(f"claude homes: {', '.join(str(h) for h in claude_homes) or '(none found)'}")
     print(f"codex homes:  {', '.join(str(h) for h in codex_homes) or '(none found)'}")
 
-    plan = build_plan(src, dst, claude_homes, codex_homes, move_folder)
+    plan = build_plan(src, dst, claude_homes, codex_homes, move_folder, merge)
     print_plan(plan)
 
     if not plan.changes:
